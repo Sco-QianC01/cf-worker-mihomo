@@ -7,10 +7,12 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 env:
   UPSTREAM_REPOSITORY: Kwisma/cf-worker-mihomo
   TARGET_BRANCH: main
+  SYNC_BRANCH: codex/upstream-sync
 
 jobs:
   sync:
@@ -22,17 +24,33 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Add upstream remote
+      - name: Fetch upstream
         run: |
           git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
           git fetch upstream "${TARGET_BRANCH}"
+          git fetch origin "${TARGET_BRANCH}"
 
-      - name: Fast-forward from upstream
+      - name: Fast-forward fork when possible
+        id: ff
+        continue-on-error: true
+        run: |
+          git checkout "${TARGET_BRANCH}"
+          git merge --ff-only "upstream/${TARGET_BRANCH}"
+          git push origin "${TARGET_BRANCH}"
+
+      - name: Prepare sync branch when fast-forward is not possible
+        if: steps.ff.outcome == 'failure'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout "${TARGET_BRANCH}"
-          git merge --ff-only "upstream/${TARGET_BRANCH}"
+          git checkout -B "${SYNC_BRANCH}" "origin/${TARGET_BRANCH}"
+          git merge --no-edit "upstream/${TARGET_BRANCH}"
+          git push --force-with-lease origin "${SYNC_BRANCH}"
 
-      - name: Push updated fork
-        run: git push origin "${TARGET_BRANCH}"
+      - name: Open or update sync pull request
+        if: steps.ff.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create --base "${TARGET_BRANCH}" --head "${SYNC_BRANCH}" --title "Sync upstream ${UPSTREAM_REPOSITORY}" --body "Automated upstream sync. Review this PR because the fork cannot be fast-forwarded safely." || \
+          gh pr edit "${SYNC_BRANCH}" --title "Sync upstream ${UPSTREAM_REPOSITORY}" --body "Automated upstream sync. Review this PR because the fork cannot be fast-forwarded safely."
