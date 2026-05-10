@@ -1,0 +1,38 @@
+name: Sync upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM_REPOSITORY: Kwisma/cf-worker-mihomo
+  TARGET_BRANCH: main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch upstream "${TARGET_BRANCH}"
+
+      - name: Fast-forward from upstream
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout "${TARGET_BRANCH}"
+          git merge --ff-only "upstream/${TARGET_BRANCH}"
+
+      - name: Push updated fork
+        run: git push origin "${TARGET_BRANCH}"
