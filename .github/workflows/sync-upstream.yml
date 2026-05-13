@@ -7,12 +7,14 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
+
+concurrency:
+  group: sync-upstream-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   UPSTREAM_REPOSITORY: Kwisma/cf-worker-mihomo
   TARGET_BRANCH: main
-  SYNC_BRANCH: codex/upstream-sync
 
 jobs:
   sync:
@@ -24,33 +26,38 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Fetch upstream
+      - name: Sync upstream safely
+        shell: bash
         run: |
-          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
-          git fetch upstream "${TARGET_BRANCH}"
-          git fetch origin "${TARGET_BRANCH}"
+          set -euo pipefail
 
-      - name: Fast-forward fork when possible
-        id: ff
-        continue-on-error: true
-        run: |
-          git checkout "${TARGET_BRANCH}"
-          git merge --ff-only "upstream/${TARGET_BRANCH}"
-          git push origin "${TARGET_BRANCH}"
-
-      - name: Prepare sync branch when fast-forward is not possible
-        if: steps.ff.outcome == 'failure'
-        run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -B "${SYNC_BRANCH}" "origin/${TARGET_BRANCH}"
-          git merge --no-edit "upstream/${TARGET_BRANCH}"
-          git push --force-with-lease origin "${SYNC_BRANCH}"
 
-      - name: Open or update sync pull request
-        if: steps.ff.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh pr create --base "${TARGET_BRANCH}" --head "${SYNC_BRANCH}" --title "Sync upstream ${UPSTREAM_REPOSITORY}" --body "Automated upstream sync. Review this PR because the fork cannot be fast-forwarded safely." || \
-          gh pr edit "${SYNC_BRANCH}" --title "Sync upstream ${UPSTREAM_REPOSITORY}" --body "Automated upstream sync. Review this PR because the fork cannot be fast-forwarded safely."
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch origin "${TARGET_BRANCH}"
+          git fetch upstream "${TARGET_BRANCH}"
+          git checkout "${TARGET_BRANCH}"
+          git reset --hard "origin/${TARGET_BRANCH}"
+
+          if git merge --ff-only "upstream/${TARGET_BRANCH}"; then
+            git push origin "${TARGET_BRANCH}"
+            echo "Fast-forwarded from ${UPSTREAM_REPOSITORY}:${TARGET_BRANCH}." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if git merge --no-edit "upstream/${TARGET_BRANCH}"; then
+            git push origin "${TARGET_BRANCH}"
+            echo "Merged upstream ${UPSTREAM_REPOSITORY}:${TARGET_BRANCH}." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            echo "Upstream sync has conflicts and was left unchanged."
+            echo
+            echo "Conflicted files:"
+            git diff --name-only --diff-filter=U | sed 's/^/- /'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          git merge --abort || true
+          exit 0
